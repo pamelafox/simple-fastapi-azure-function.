@@ -123,6 +123,15 @@ module apiManagementResources 'apimanagement.bicep' = {
 }
 
 
+module diagnostics 'app-diagnostics.bicep' = {
+  name: 'function-diagnostics'
+  params: {
+    appName: functionApp.name
+    kind: 'functionapp'
+    diagnosticWorkspaceId: logAnalytics.id
+  }
+}
+
 resource functionAppProperties 'Microsoft.Web/sites/config@2022-03-01' = {
   name: 'web'
   kind: 'string'
