@@ -22,7 +22,6 @@ module resources 'resources.bicep' = {
   name: 'resources'
   scope: resourceGroup
   params: {
-    name: name
     location: location
     resourceToken: resourceToken
     tags: tags
@@ -30,6 +29,6 @@ module resources 'resources.bicep' = {
 }
 
 output SERVICE_API_ENDPOINTS array = [
-  'https://${resources.outputs.functionUrl}/docs'
+  '${resources.outputs.functionUrl}/docs'
   '${resources.outputs.apimServiceUrl}/generate_name'
 ]

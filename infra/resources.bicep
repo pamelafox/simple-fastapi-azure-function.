@@ -1,13 +1,11 @@
-param name string
 param location string = resourceGroup().location
 param resourceToken string
 param tags object
 
-var prefix = '${name}-${resourceToken}'
-
+var functionServiceName = '${resourceToken}-function-app'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-12-01-preview' = {
-  name: '${prefix}-logworkspace'
+  name: '${resourceToken}-logworkspace'
   location: location
   tags: tags
   properties: any({
@@ -22,7 +20,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-12-01-previ
 }
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02-preview' = {
-  name: '${prefix}-appinsights'
+  name: '${resourceToken}-appinsights'
   location: location
   tags: tags
   kind: 'web'
@@ -32,10 +30,8 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02-preview' = {
   }
 }
 
-var validStoragePrefix = take(replace(prefix, '-', ''), 17)
-
 resource storageAccount 'Microsoft.Storage/storageAccounts@2019-06-01' = {
-  name: '${validStoragePrefix}storage'
+  name: '${resourceToken}storage'
   location: location
   kind: 'StorageV2'
   tags: tags
@@ -46,79 +42,45 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2019-06-01' = {
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
   }
-}
 
-resource hostingPlan 'Microsoft.Web/serverfarms@2020-10-01' = {
-  name: '${prefix}-plan' 
-  location: location
-  tags: tags
-  kind: 'functionapp'
-  properties: {
-    reserved: true
-  }
-  sku: {
-    name: 'Y1'
-  }
-}
-
-resource functionApp 'Microsoft.Web/sites@2020-06-01' = {
-  name: '${prefix}-function-app'
-  location: location
-  tags: union(tags, {
-    'azd-service-name': 'api'
-   })
-  kind: 'functionapp,linux'
-  properties: {
-    httpsOnly: true
-    serverFarmId: hostingPlan.id
-    clientAffinityEnabled: false
-    siteConfig: {
-      linuxFxVersion: 'Python|3.10'
-      appSettings: [
-        {
-           name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
-           value: appInsights.properties.InstrumentationKey
-        }
-        {
-          name: 'AzureWebJobsStorage'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};EndpointSuffix=${az.environment().suffixes.storage};AccountKey=${listKeys(storageAccount.id, storageAccount.apiVersion).keys[0].value}'
-        }
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'python'
-        }
-        {
-          name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};EndpointSuffix=${az.environment().suffixes.storage};AccountKey=${listKeys(storageAccount.id, storageAccount.apiVersion).keys[0].value}'
-        }
-        {
-          name: 'ENABLE_ORYX_BUILD'
-          value: 'true'
-        }
-        {
-          name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
-          value: 'true'
-        }
-      ]
+  resource blobServices 'blobServices' = {
+    name: 'default'
+    resource container 'containers' = {
+      name: functionServiceName
     }
   }
 }
 
+resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: '${resourceToken}-plan'
+  location: location
+  tags: tags
+  kind: 'functionapp'
+  sku: {
+    name: 'FC1'
+    tier: 'FlexConsumption'
+  }
+  properties: {
+    reserved: true
+  }
+}
 
-module apiManagementResources 'apimanagement.bicep' = {
-  name: 'apimanagement-resources'
+module functionApp 'core/host/functions-flex.bicep' = {
+  name: 'function-app'
   params: {
-    prefix: prefix
+    name: functionServiceName
     location: location
-    tags: tags
-    functionAppName: functionApp.name
-    appInsightsName: appInsights.name
-    appInsightsId: appInsights.id
-    appInsightsKey: appInsights.properties.InstrumentationKey
+    tags: union(tags, { 'azd-service-name': 'api' })
+    alwaysOn: false
+    appSettings: {
+      FUNCTIONS_EXTENSION_VERSION: '~4'
+      AzureWebJobsStorage__accountName: storageAccount.name
+    }
+    appServicePlanId: hostingPlan.id
+    runtimeName: 'python'
+    runtimeVersion: '3.11'
+    storageAccountName: storageAccount.name
+    applicationInsightsName: appInsights.name
   }
 }
 
@@ -126,25 +88,34 @@ module apiManagementResources 'apimanagement.bicep' = {
 module diagnostics 'app-diagnostics.bicep' = {
   name: 'function-diagnostics'
   params: {
-    appName: functionApp.name
+    appName: functionApp.outputs.name
     kind: 'functionapp'
     diagnosticWorkspaceId: logAnalytics.id
   }
 }
 
-resource functionAppProperties 'Microsoft.Web/sites/config@2022-03-01' = {
-  name: 'web'
-  kind: 'string'
-  parent: functionApp
-  properties: {
-      apiManagementConfig: {
-        id: '${apiManagementResources.outputs.apimServiceID}/apis/model-prediction-api'
-      }
+
+module apiManagementResources 'apimanagement.bicep' = {
+  name: 'apimanagement-resources'
+  params: {
+    prefix: resourceToken
+    location: location
+    tags: tags
+    functionAppName: functionApp.outputs.name
+    appInsightsName: appInsights.name
+    appInsightsId: appInsights.id
+    appInsightsKey: appInsights.properties.InstrumentationKey
   }
-  dependsOn: [
-    apiManagementResources
-  ]
 }
 
+module apimFunctionConnection 'apim-function.bicep' = {
+  name: 'apim-function'
+  params: {
+    functionAppName: functionApp.outputs.name
+    apiManagementConfigId: '${apiManagementResources.outputs.apimServiceID}/apis/model-prediction-api'
+  }
+}
+
+
 output apimServiceUrl string = apiManagementResources.outputs.apimServiceUrl
-output functionUrl string = functionApp.properties.defaultHostName
+output functionUrl string = functionApp.outputs.uri
